@@ -1,0 +1,4 @@
+# Match the existing backend runtime; no frontend framework is required.
+fastapi==0.141.1
+uvicorn==0.54.0
+starlette==1.7.0
