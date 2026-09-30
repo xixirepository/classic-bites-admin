@@ -4,6 +4,9 @@
   const $ = (id) => document.getElementById(id);
   const labels = { books: "책", works: "내부 작품", chapters: "장", bites: "한입" };
   const singular = { books: "book", works: "work", chapters: "chapter", bites: "bite" };
+  const titleFields = ["title_hanzi", "title_pinyin"];
+  const workSourceFields = ["source_edition", "source_url", "pinyin_source"];
+  const contentFields = ["original", "pinyin", "translation", "commentary"];
   const state = {
     apiOrigin: null, accessToken: null, refreshToken: null, user: null,
     trail: [], data: null, editor: null, editorBaseline: "", loading: false,
@@ -352,6 +355,32 @@
     return holder;
   }
 
+  function titleReading(entity) {
+    const preview = node("div", "title-reading");
+    if (entity.title_hanzi) {
+      const hanzi = node("p", "hanzi", entity.title_hanzi);
+      hanzi.lang = "zh";
+      preview.append(hanzi);
+    }
+    if (entity.title_pinyin) {
+      const pinyin = node("p", "pinyin", entity.title_pinyin);
+      pinyin.lang = "zh-Latn-pinyin";
+      preview.append(pinyin);
+    }
+    return preview;
+  }
+
+  function readingPreview(original, pinyin) {
+    const preview = node("section", "reading-preview");
+    preview.append(node("h2", "", "한자·병음 미리보기"));
+    const hanzi = node("p", original ? "hanzi" : "muted", original || "아직 입력한 원문이 없어요.");
+    hanzi.lang = "zh";
+    const pronunciation = node("p", pinyin ? "pinyin" : "muted pinyin", pinyin || "아직 입력한 병음이 없어요.");
+    pronunciation.lang = "zh-Latn-pinyin";
+    preview.append(hanzi, pronunciation);
+    return preview;
+  }
+
   function openItem(kind, record) {
     navigate([...state.trail, { kind, id: record.id, title: record.title }]);
   }
@@ -379,6 +408,7 @@
       const opener = button(item.title, () => openItem(kind, item), "item-open");
       opener.setAttribute("aria-label", `${item.title}, ${kind === "bites" ? "본문" : "내용"} 열기`);
       main.append(opener);
+      if (kind === "works" || kind === "chapters") main.append(titleReading(item));
       if (item.description) main.append(node("p", "item-description", item.description));
       main.append(statusBadges(item));
       const actions = node("div", "row-actions");
@@ -405,6 +435,7 @@
     const heading = node("div", "catalog-heading");
     const text = node("div");
     text.append(node("p", "eyebrow", selected ? labels[selected.kind] : "LIBRARY"), node("h1", "", entity?.title || "우리의 고전 서재"));
+    if (selected?.kind === "works" || selected?.kind === "chapters") text.append(titleReading(entity));
     text.append(node("p", "", entity?.description || (selected ? "등록한 내용을 확인하고 차근차근 채워보세요." : "책을 등록하고, 독자에게 전할 내용을 채워보세요.")));
     if (entity) text.append(statusBadges(entity));
     heading.append(text);
@@ -419,7 +450,8 @@
     if (selected?.kind === "works") panel.append(renderSection("chapters", data.chapters || [], "장 목록", "이 작품의 첫 장을 추가해보세요."));
     if (selected?.kind === "chapters") panel.append(renderSection("bites", data.bites || [], "한입 목록", "이 장에서 읽을 첫 한입을 추가해보세요."));
     if (selected?.kind === "bites") {
-      for (const [key, title] of [["original", "원문"], ["translation", "번역"], ["commentary", "해설"]]) {
+      panel.append(readingPreview(entity.original, entity.pinyin));
+      for (const [key, title] of [["translation", "번역"], ["commentary", "해설"]]) {
         const preview = node("section", "reading-preview");
         preview.append(node("h2", "", title), node("p", entity[key] ? "" : "muted", entity[key] || "아직 입력한 내용이 없어요."));
         panel.append(preview);
@@ -440,7 +472,7 @@
     const holder = node("div", "field");
     const caption = node("label", "", label);
     caption.htmlFor = `field-${name}`;
-    const input = node(textarea ? "textarea" : "input", textarea && ["original", "translation", "commentary"].includes(name) ? "content-input" : "");
+    const input = node(textarea ? "textarea" : "input", textarea && contentFields.includes(name) ? "content-input" : "");
     input.id = `field-${name}`;
     input.name = name;
     if (!textarea) input.type = type;
@@ -457,6 +489,26 @@
     }
     form.append(holder);
     return input;
+  }
+
+  function reviewField(form, value) {
+    const holder = node("div", "field");
+    const label = node("label", "", "원문·병음 검수 상태");
+    label.htmlFor = "field-review_status";
+    const select = node("select");
+    select.id = "field-review_status";
+    select.name = "review_status";
+    for (const [key, text] of [["draft", "초안 · 검수 전"], ["reviewed", "원문·병음 검수 완료"]]) {
+      const option = node("option", "", text);
+      option.value = key;
+      select.append(option);
+    }
+    select.value = value || "draft";
+    select.setAttribute("aria-describedby", "hint-review_status");
+    const hint = node("p", "field-hint", "선택한 판본의 원문과 모든 병음을 함께 확인한 뒤에만 검수 완료로 바꿔주세요. 공개 여부와는 별개예요.");
+    hint.id = "hint-review_status";
+    holder.append(label, select, hint);
+    form.append(holder);
   }
 
   function parentFor(kind, record) {
@@ -483,13 +535,13 @@
     if (!force && !(await allowDiscard())) return;
     if (state.loading || state.saving) return;
     tell("");
-    if (record && kind === "bites" && record.original === undefined) {
+    if (record && ((kind === "bites" && record.original === undefined) || (kind === "works" && record.review_status === undefined))) {
       const version = state.requestVersion;
       state.loading = true;
       try {
-        const response = await request(`/admin/api/bites/${encodeURIComponent(record.id)}`);
+        const response = await request(`/admin/api/${kind}/${encodeURIComponent(record.id)}`);
         if (version !== state.requestVersion) return;
-        record = response.bite;
+        record = response[singular[kind]];
       } catch (error) {
         tell(errorText(error), true);
         return;
@@ -507,12 +559,27 @@
     const form = node("form", "editor-form");
     form.id = "editor-form";
     inputField(form, "title", "제목", record?.title || "", { required: true, maxLength: 200 });
+    if (kind === "works" || kind === "chapters") {
+      inputField(form, "title_hanzi", "한자 제목", record?.title_hanzi || "", { maxLength: 200, hint: "독자가 읽는 화면에 표시할 한자 제목이에요. 기존 한국어 제목은 유지돼요." });
+      inputField(form, "title_pinyin", "제목 병음", record?.title_pinyin || "", { maxLength: 200, hint: "중국어 보통화 기준으로 성조 부호를 포함해주세요." });
+    }
     if (kind === "books" || kind === "works") inputField(form, "description", "소개", record?.description || "", { textarea: true, maxLength: 10000, hint: "책이나 작품을 소개하는 짧은 설명을 적어주세요." });
+    if (kind === "works") {
+      inputField(form, "source_edition", "원문 판본", record?.source_edition || "", { maxLength: 1000, hint: "원문의 판본·편집 기준을 기록해주세요. 관리 화면에서만 사용돼요." });
+      inputField(form, "source_url", "원문 출처 주소", record?.source_url || "", { maxLength: 2048 });
+      inputField(form, "pinyin_source", "병음 출처·검수 기록", record?.pinyin_source || "", { textarea: true, maxLength: 2000, hint: "참고 자료와 확인한 범위, 아직 확인하지 않은 내용을 구분해주세요." });
+      reviewField(form, record?.review_status);
+    }
     if (kind === "bites") {
-      inputField(form, "original", "원문", record?.original || "", { textarea: true, maxLength: 100000 });
+      inputField(form, "original", "한자 원문", record?.original || "", { textarea: true, maxLength: 100000 });
+      inputField(form, "pinyin", "병음", record?.pinyin || "", { textarea: true, maxLength: 100000, hint: "바로 위 원문과 같은 읽기 단위로, 중국어 보통화의 성조 부호를 포함해주세요. 원문과 줄바꿈 순서도 맞춰주세요." });
+      const preview = node("div");
+      preview.id = "editor-reading-preview";
+      preview.append(readingPreview(record?.original, record?.pinyin));
+      form.append(preview);
       inputField(form, "translation", "번역", record?.translation || "", { textarea: true, maxLength: 100000 });
       inputField(form, "commentary", "해설", record?.commentary || "", { textarea: true, maxLength: 100000 });
-      form.append(node("p", "field-hint", "게시할 권리와 검수를 확인한 내용을 입력하세요. 본문이 모두 비어 있으면 앱에 준비 중으로 표시돼요."));
+      form.append(node("p", "field-hint", "게시할 권리와 검수를 확인한 내용을 입력하세요. 앱의 작품 전용 한자·병음 읽기 화면에는 번역·해설을 표시하지 않지만 저장된 내용은 유지돼요. 이 화면에서는 원문이 없으면 준비 중으로 표시돼요."));
       form.append(node("hr", "form-divider"));
     }
     inputField(form, "sort_order", "노출 순서", record?.sort_order ?? nextOrder(kind), { type: "number", required: true, hint: "작은 숫자가 먼저 나와요. 같은 숫자에서는 서버의 기본 순서를 따라요." });
@@ -543,7 +610,10 @@
     status.setAttribute("aria-live", "polite");
     form.append(status);
     form.addEventListener("submit", saveEntity);
-    form.addEventListener("input", () => { $("form-status").textContent = hasUnsaved() ? "저장하지 않은 변경 사항이 있어요." : ""; });
+    form.addEventListener("input", () => {
+      $("form-status").textContent = hasUnsaved() ? "저장하지 않은 변경 사항이 있어요." : "";
+      if (kind === "bites") $("editor-reading-preview").replaceChildren(readingPreview($("field-original").value, $("field-pinyin").value));
+    });
     panel.append(header, form);
     if (kind === "books" || kind === "works") renderCoverEditor(panel, record);
     state.editorBaseline = formSnapshot();
@@ -554,14 +624,19 @@
   function writePayload(kind, record) {
     const payload = { title: record.title, sort_order: record.sort_order, is_published: record.is_published, ...parentFor(kind, record) };
     if (kind === "books" || kind === "works") payload.description = record.description || "";
-    if (kind === "bites") for (const field of ["original", "translation", "commentary"]) payload[field] = record[field] || "";
+    if (kind === "works" || kind === "chapters") for (const field of titleFields) payload[field] = record[field] || "";
+    if (kind === "works") {
+      for (const field of workSourceFields) payload[field] = record[field] || "";
+      payload.review_status = record.review_status || "draft";
+    }
+    if (kind === "bites") for (const field of contentFields) payload[field] = record[field] || "";
     return payload;
   }
 
   function setSaving(value) {
     state.saving = value;
     $("editor-panel").setAttribute("aria-busy", String(value));
-    for (const control of $("editor-panel").querySelectorAll("button,input,textarea")) control.disabled = value;
+    for (const control of $("editor-panel").querySelectorAll("button,input,textarea,select")) control.disabled = value;
     for (const control of $("catalog-panel").querySelectorAll("button")) control.disabled = value;
     $("refresh-button").disabled = value;
     $("logout-button").disabled = value;
@@ -574,7 +649,12 @@
     const payload = { ...parent, title: $("field-title").value.trim(), sort_order: Number($("field-sort_order").value), is_published: $("field-is_published").checked };
     if (!payload.title) { $("field-title").setCustomValidity("제목을 입력해주세요."); $("field-title").reportValidity(); $("field-title").addEventListener("input", () => $("field-title").setCustomValidity(""), { once: true }); return; }
     if (kind === "books" || kind === "works") payload.description = $("field-description").value;
-    if (kind === "bites") for (const field of ["original", "translation", "commentary"]) payload[field] = $(`field-${field}`).value;
+    if (kind === "works" || kind === "chapters") for (const field of titleFields) payload[field] = $(`field-${field}`).value;
+    if (kind === "works") {
+      for (const field of workSourceFields) payload[field] = $(`field-${field}`).value;
+      payload.review_status = $("field-review_status").value;
+    }
+    if (kind === "bites") for (const field of contentFields) payload[field] = $(`field-${field}`).value;
     setMessage($("editor-message"), "");
     setSaving(true);
     $("save-button").textContent = "저장 중…";
@@ -604,7 +684,7 @@
     tell("");
     try {
       let full = record;
-      if (kind === "bites" && record.original === undefined) full = (await request(`/admin/api/bites/${encodeURIComponent(record.id)}`)).bite;
+      if ((kind === "bites" && record.original === undefined) || (kind === "works" && record.review_status === undefined)) full = (await request(`/admin/api/${kind}/${encodeURIComponent(record.id)}`))[singular[kind]];
       await request(`/admin/api/${kind}/${encodeURIComponent(record.id)}`, { method: "PUT", body: { ...writePayload(kind, full), is_published: !record.is_published } });
       renderEditorEmpty();
       await navigate(state.trail, { discard: false, successMessage: "공개 설정을 변경했어요." });
